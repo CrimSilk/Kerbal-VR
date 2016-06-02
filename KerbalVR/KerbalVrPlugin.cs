@@ -17,7 +17,7 @@ namespace KerbalVR
         private bool hmdIsInitialized = false;
         private bool hmdIsActive = false;
         private bool hmdIsActive_prev = false;
-        private bool hmdIsRenderingLeft = true;
+        private EVREye hmdEyeBeingRendered = EVREye.Eye_Left;
 
         private CVRSystem vrSystem;
         private CVRCompositor vrCompositor;
@@ -131,13 +131,13 @@ namespace KerbalVR
             // perform regular updates if HMD is initialized
             if (hmdIsActive && hmdIsInitialized)
             {
+                Debug.Log("[KerbalVR] render");
                 EVRCompositorError vrCompositorError = EVRCompositorError.None;
 
                 // get latest HMD pose
                 //--------------------------------------------------------------
                 vrSystem.GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin.TrackingUniverseSeated, 0.0f, vrDevicePoses);
-                HmdMatrix34_t vrLeftEyeTransform = vrSystem.GetEyeToHeadTransform(EVREye.Eye_Left);
-                HmdMatrix34_t vrRightEyeTransform = vrSystem.GetEyeToHeadTransform(EVREye.Eye_Right);
+                HmdMatrix34_t vrEyeTransform = vrSystem.GetEyeToHeadTransform(hmdEyeBeingRendered);
                 vrCompositorError = vrCompositor.WaitGetPoses(vrRenderPoses, vrGamePoses);
 
                 if (vrCompositorError != EVRCompositorError.None)
@@ -147,20 +147,17 @@ namespace KerbalVR
                 }
 
                 // convert SteamVR poses to Unity coordinates
-                //Debug.Log("[KerbalVR] transforms");
                 var hmdTransform = new SteamVR_Utils.RigidTransform(vrDevicePoses[0].mDeviceToAbsoluteTracking);
-                var hmdLeftEyeTransform = new SteamVR_Utils.RigidTransform(vrLeftEyeTransform);
-                var hmdRightEyeTransform = new SteamVR_Utils.RigidTransform(vrRightEyeTransform);
+                var hmdEyeTransform = new SteamVR_Utils.RigidTransform(vrEyeTransform);
 
                 // Render the LEFT eye
                 //--------------------------------------------------------------
-                //Debug.Log("[KerbalVR] left eye");
                 // rotate camera according to the HMD orientation
                 InternalCamera.Instance.transform.localRotation = hmdTransform.rot;
 
                 // translate the camera to match the position of the left eye, from origin
                 InternalCamera.Instance.transform.localPosition = new Vector3(0f, 0f, 0f);
-                InternalCamera.Instance.transform.Translate(hmdLeftEyeTransform.pos);
+                InternalCamera.Instance.transform.Translate(hmdEyeTransform.pos);
 
                 // translate the camera to match the position of the HMD
                 InternalCamera.Instance.transform.localPosition += hmdTransform.pos;
@@ -172,49 +169,37 @@ namespace KerbalVR
                 // render the set of cameras
                 foreach (CameraProperties camStruct in camerasToRender)
                 {
-                    // set projection matrix
-                    camStruct.camera.projectionMatrix = camStruct.hmdLeftProjMatrix;
-
-                    // set texture to render to
-                    camStruct.camera.targetTexture = hmdLeftEyeRenderTexture;
-                    RenderTexture.active = hmdLeftEyeRenderTexture;
-
-                    // render camera
-                    camStruct.camera.Render();
-
-                    // reset texture buffer
-                    camStruct.camera.targetTexture = null;
-                    RenderTexture.active = null;
-
-                    // reset camera projection back to original
-                    camStruct.camera.projectionMatrix = camStruct.originalProjMatrix;
+                    // 1. set projection matrix
+                    // 2. set texture to render into
+                    // 3. render the camera
+                    // 4. reset the texture buffer
+                    // 5. reset camera projection
+                    //
+                    if (hmdEyeBeingRendered == EVREye.Eye_Left)
+                    {
+                        camStruct.camera.projectionMatrix = camStruct.hmdLeftProjMatrix; // step 1
+                        camStruct.camera.targetTexture = hmdLeftEyeRenderTexture; // 2
+                        RenderTexture.active = hmdLeftEyeRenderTexture;
+                        camStruct.camera.Render(); // 3
+                        camStruct.camera.targetTexture = null; // 4
+                        RenderTexture.active = null;
+                        camStruct.camera.projectionMatrix = camStruct.originalProjMatrix; // 5
+                    }
+                    else
+                    {
+                        camStruct.camera.projectionMatrix = camStruct.hmdRightProjMatrix; // step 1
+                        camStruct.camera.targetTexture = hmdRightEyeRenderTexture; // 2
+                        RenderTexture.active = hmdRightEyeRenderTexture;
+                        camStruct.camera.Render(); // 3
+                        camStruct.camera.targetTexture = null; // 4
+                        RenderTexture.active = null;
+                        camStruct.camera.projectionMatrix = camStruct.originalProjMatrix; // 5
+                    }
                 }
 
-
-                // Render the RIGHT eye (see previous comments)
-                //--------------------------------------------------------------
-                //Debug.Log("[KerbalVR] right eye");
-                InternalCamera.Instance.transform.localRotation = hmdTransform.rot;
-                InternalCamera.Instance.transform.localPosition = new Vector3(0f, 0f, 0f);
-                InternalCamera.Instance.transform.Translate(hmdRightEyeTransform.pos);
-                InternalCamera.Instance.transform.localPosition += hmdTransform.pos;
-                FlightCamera.fetch.transform.position = InternalSpace.InternalToWorld(InternalCamera.Instance.transform.position);
-                FlightCamera.fetch.transform.rotation = InternalSpace.InternalToWorld(InternalCamera.Instance.transform.rotation);
-
-                foreach (CameraProperties camStruct in camerasToRender)
-                {
-                    camStruct.camera.projectionMatrix = camStruct.hmdRightProjMatrix;
-                    camStruct.camera.targetTexture = hmdRightEyeRenderTexture;
-                    RenderTexture.active = hmdRightEyeRenderTexture;
-                    camStruct.camera.Render();
-                    camStruct.camera.targetTexture = null;
-                    RenderTexture.active = null;
-                    camStruct.camera.projectionMatrix = camStruct.originalProjMatrix;
-                }
 
                 // Set camera position to an HMD-centered position (for regular screen rendering)
                 //--------------------------------------------------------------
-                //Debug.Log("[KerbalVR] reset");
                 InternalCamera.Instance.transform.localRotation = hmdTransform.rot;
                 InternalCamera.Instance.transform.localPosition = hmdTransform.pos;
                 FlightCamera.fetch.transform.position = InternalSpace.InternalToWorld(InternalCamera.Instance.transform.position);
@@ -232,27 +217,35 @@ namespace KerbalVR
 
                 // Submit frames to HMD
                 //--------------------------------------------------------------
-                //Debug.Log("[KerbalVR] frame submit");
                 vrCompositorError = vrCompositor.Submit(EVREye.Eye_Left, ref hmdLeftEyeTexture, ref hmdTextureBounds, EVRSubmitFlags.Submit_Default);
                 if (vrCompositorError != EVRCompositorError.None)
                 {
-                    Debug.Log("[KerbalVR] Submit (Eye_Left) failed: " + (int)vrCompositorError);
+                    Debug.Log("[KerbalVR] Submit (LEFT) failed: " + (int)vrCompositorError);
                 }
-
-
                 vrCompositorError = vrCompositor.Submit(EVREye.Eye_Right, ref hmdRightEyeTexture, ref hmdTextureBounds, EVRSubmitFlags.Submit_Default);
                 if (vrCompositorError != EVRCompositorError.None)
                 {
-                    Debug.Log("[KerbalVR] Submit (Eye_Right) failed: " + (int)vrCompositorError);
+                    Debug.Log("[KerbalVR] Submit (RIGHT) failed: " + (int)vrCompositorError);
                 }
+
+                hmdEyeBeingRendered = (hmdEyeBeingRendered == EVREye.Eye_Left) ? EVREye.Eye_Right : EVREye.Eye_Left;
+
+                /*Debug.Log("[KerbalVR] frame submit");
+                if (hmdEyeBeingRendered == EVREye.Eye_Left)
+                {
+                    hmdEyeBeingRendered = EVREye.Eye_Right; // alternate the eye
+                }
+                else
+                {
+                    hmdEyeBeingRendered = EVREye.Eye_Left; // alternate the eye
+                }*/
 
 
                 // DEBUG
                 if (Input.GetKeyDown(KeyCode.H))
                 {
                     Debug.Log("[KerbalVR] POSITION hmdTransform : " + hmdTransform.pos.x + ", " + hmdTransform.pos.y + ", " + hmdTransform.pos.z);
-                    Debug.Log("[KerbalVR] POSITION hmdLTransform : " + hmdLeftEyeTransform.pos.x + ", " + hmdLeftEyeTransform.pos.y + ", " + hmdLeftEyeTransform.pos.z);
-                    Debug.Log("[KerbalVR] POSITION hmdRTransform : " + hmdRightEyeTransform.pos.x + ", " + hmdRightEyeTransform.pos.y + ", " + hmdRightEyeTransform.pos.z);
+                    Debug.Log("[KerbalVR] POSITION hmdEyeTransform (" + ((hmdEyeBeingRendered == EVREye.Eye_Left) ? "LEFT" : "RIGHT") + "): " + hmdEyeTransform.pos.x + ", " + hmdEyeTransform.pos.y + ", " + hmdEyeTransform.pos.z);
 
                     foreach (Camera c in Camera.allCameras)
                     {
@@ -262,7 +255,7 @@ namespace KerbalVR
 
                     cameraNameSelected += 1;
                     cameraNameSelected = (cameraNameSelected >= cameraNames.Length) ? 0 : cameraNameSelected;
-                    Debug.Log("[KerbalVR] Rendering camera: " + cameraNames[cameraNameSelected]);
+                    //Debug.Log("[KerbalVR] Rendering camera: " + cameraNames[cameraNameSelected]);
                 }
 
                 if (Input.GetKeyDown(KeyCode.I))
